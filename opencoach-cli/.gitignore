@@ -1,0 +1,28 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 自动生成的模板文件（由 scripts/sync-templates.js 生成）
+# 源文件在 ../opencoach/ 目录
+src/templates/
+
+# 测试生成的临时文件和目录
+# 保留 *.test.ts 测试文件本身，但忽略测试运行时生成的临时数据
+**/__tests__/test-*
+**/__tests__/opencoach/
+**/__tests__/templates/
+**/__tests__/workflows/
+**/__tests__/.opencoach/
+**/__tests__/*.md
+**/__tests__/*.json
+**/goals/
+**/.opencoach/
+**/templates/
