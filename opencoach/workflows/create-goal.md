@@ -90,13 +90,31 @@ END IF
 **进入条件**: 从 INIT 转换而来
 **执行动作**:
 - 检查 `goals/` 目录是否存在
-- 扫描现有目标文件夹，避免重复创建
+- 使用 CLI 工具扫描现有目标文件夹，避免重复创建
+
+**CLI 工具使用**:
+```bash
+# 检查 CLI 工具可用性
+opco --version
+# 如果退出码为 0，继续使用 CLI；否则切换到手动模式
+
+# 获取所有目标列表
+opco list --json
+
+# 如果需要查看某个现有目标的详情
+opco view <existing-goal-name> --json
+```
+
 **转换规则**:
 ```
 IF goals/ 目录不存在 THEN
   提示将创建目录 → GOAL_ELICITATION
 ELSE IF 发现相似目标 THEN
   询问用户："我看到你已经有一个关于[主题]的目标，是要创建新的还是更新现有的？"
+  IF 用户选择查看现有目标 THEN
+    使用 `opco view <goal-name> --json` 展示目标详情
+    展示后继续询问
+  END IF
   IF 用户选择更新现有目标 THEN
     → ERROR (引导用户使用更新工作流)
   ELSE
@@ -216,7 +234,67 @@ END IF
 
 5. Time-bound (时限性)
 评估: 目标是否有明确的时间框架
+
+**CLI 工具使用**:
+```bash
+# 获取当前日期供参考
+opco date
+
+# 获取当前日期的JSON格式信息
+opco date --json
+```
+
 Q: "你打算什么时候实现这个目标？给自己设定一个期限吧！"
+
+**模糊时间表述处理**:
+IF 用户使用模糊时间表述 THEN
+  使用 CLI 工具计算具体日期:
+  
+  "三个月后" 或 "三个月"
+  → `opco date --offset +3m`
+  
+  "年底" 或 "今年底"
+  → `opco date --date 12-31`
+  
+  "下周" 或 "一周后"
+  → `opco date --offset +1w`
+  
+  "下个月"
+  → `opco date --offset +1m`
+  
+  展示计算结果: "根据你说的[模糊时间]，具体日期是[计算出的日期]，这个日期可以吗？"
+  
+  IF 用户同意 THEN
+    保存具体日期
+  ELSE
+    引导用户指定具体日期
+  END IF
+END IF
+
+**时间建议展示**:
+IF 用户询问建议日期 OR 需要引导 THEN
+  使用 CLI 工具展示日期信息:
+  
+  当前日期信息
+  → `opco date --json --format short`
+  
+  展示建议: "今天是[日期]，根据你的目标难度，我建议设置[建议时长]的时间框架，也就是到[建议日期]，你觉得怎么样？"
+END IF
+
+**目标持续时间计算**:
+IF 用户指定了开始日期和截止日期 THEN
+  使用 CLI 工具计算持续时间:
+  → `opco date --date <开始日期> --diff <截止日期>`
+  
+  展示计算结果: "从[开始日期]到[截止日期]，一共有[天数]天，大约[周数]周。"
+  
+  IF 用户确认 THEN
+    保存时间框架信息
+  ELSE
+    引导用户调整日期
+  END IF
+END IF
+
 IF 无时间框架 THEN
   协助设定合理的时间期限
   → CLARIFY (设定时间框架)
@@ -270,8 +348,32 @@ END IF
 #### STATE: FILE_CREATION (创建目标文件)
 **进入条件**: 所有目标信息已收集完整
 **执行动作**:
-- 创建 `goals/[goal-name]/` 文件夹
-- 生成 `goal.md` 文件
+- 使用 CLI 工具创建 `goals/[goal-name]/` 文件夹
+- 使用 CLI 工具生成 `goal.md` 文件
+
+**CLI 工具使用**:
+```bash
+# 基本创建
+opco create <goal-name>
+
+# 带偏好设置创建
+opco create <goal-name> --with-preferences
+
+# 完整参数创建
+opco create <goal-name> --with-preferences --title "<title>" --description "<description>"
+
+# JSON 输出模式（推荐给 Agent）
+opco create <goal-name> --json
+
+# 静默模式（减少输出）
+opco create <goal-name> --quiet
+```
+
+**退出码处理**:
+- `退出码 0`: 创建成功，继续到下一步
+- `退出码 1`: 一般错误，如目标文件夹已存在，询问用户是否使用 `--force` 覆盖
+- `退出码 2`: 配置错误，引导用户检查配置
+- `退出码 3`: 文件格式错误，尝试使用 `opco check <goal-name> --fix` 修复
 
 **文件夹命名规则**:
 ```
@@ -283,12 +385,18 @@ END IF
 
 **错误处理**:
 ```
-IF 文件夹已存在 THEN
+IF CLI 工具未安装 THEN
+  切换到手动模式
+  手动创建文件夹和文件
+  提示用户安装 CLI 工具以提升效率
+END IF
+
+IF 退出码为 1 AND 目标文件夹已存在 THEN
   询问用户是否覆盖或重命名
   IF 用户选择重命名 THEN
     添加时间戳后缀: "learn-python-programming-20260103"
   ELSE IF 用户选择覆盖 THEN
-    备份原文件到 archives/
+    使用 `opco create <goal-name> --force` (如果支持) 或手动备份后覆盖
   ELSE
     → ERROR (文件创建失败)
   END IF
@@ -305,7 +413,13 @@ END IF
 ```
 IF 文件创建成功 THEN
   "目标文件创建成功！📝"
-  → MILESTONE_PLANNING
+  # 使用 CLI 工具验证文件格式
+  opco check <goal-name> --fix
+  IF 退出码为 0 THEN
+    → MILESTONE_PLANNING
+  ELSE
+    修复问题后继续 → MILESTONE_PLANNING
+  END IF
 ELSE
   → ERROR (文件操作失败)
 END IF
@@ -397,9 +511,22 @@ END IF
 #### STATE: COMPLETE (完成)
 **进入条件**: 所有必要文件已创建
 **执行动作**:
+- 使用 CLI 工具验证工作流完整性
 - 总结工作流成果
 - 确认文件创建情况
 - 询问下一步计划
+
+**CLI 工具使用**:
+```bash
+# 验证工作流完整性
+opco validate <goal-name>
+
+# 使用 JSON 输出模式获取验证结果
+opco validate <goal-name> --json
+
+# 查看创建后的目标状态
+opco view <goal-name>
+```
 
 **完成检查清单**:
 ```
@@ -407,6 +534,7 @@ END IF
 ✓ 目标文件已创建: goal.md
 ✓ 里程碑文件已创建: milestones.md
 ○ 偏好文件已创建: preferences.md (可选)
+✓ 工作流验证通过: `opco validate <goal-name>` 返回退出码 0
 ```
 
 **结束语模板**:
@@ -481,6 +609,13 @@ END IF
 5. 时间框架（Time Frame）
 6. 行动方针（Action Guidelines）
 
+**文件验证**:
+文件创建后应使用 CLI 工具验证文件格式：
+```bash
+opco check <goal-name> --fix
+```
+如果退出码为 1（发现问题），`--fix` 参数会自动修复可修复的问题。
+
 ### 里程碑文件 Milestones File (`milestones.md`)
 
 使用模板: `templates/milestones.md`
@@ -489,11 +624,35 @@ END IF
 1. 里程碑列表（List of Milestones）
 2. 里程碑描述（Milestone Descriptions）
 
+**文件验证**:
+文件创建后应使用 CLI 工具验证文件格式：
+```bash
+opco check <goal-name> --quiet
+```
+
 ### 用户偏好文件 User Preferences File (`preferences.md`)
 
 使用模板: `templates/preferences.md`
 
 包含用户提到的所有偏好和要求的详细描述。
+
+**文件验证**:
+如果创建了偏好文件，也应验证文件格式：
+```bash
+opco check <goal-name> --quiet
+```
+
+### 工作流完整性验证
+
+所有文件创建完成后，使用 CLI 工具验证工作流完整性：
+```bash
+opco validate <goal-name> --workflow create-goal
+```
+
+**验证结果处理**:
+- 退出码 `0`: 工作流完整，可以进入 COMPLETE 状态
+- 退出码 `1`: 发现问题，根据返回的 `missingFiles` 或 `issues` 进行修复
+- 验证失败时，应向用户展示问题列表并等待修复后再继续
 </output_specifications>
 
 <completion_checklist>

@@ -95,11 +95,35 @@ END IF
 **进入条件**: 从 INIT 转换而来
 **执行动作**:
 - 检查 `goals/` 目录是否存在
-- 扫描目标文件夹，查找 `goal.md` 和 `milestones.md`
-- 检查是否已存在 `tasks.md`
+- 使用 CLI 工具扫描目标文件夹
+- 使用 CLI 工具验证前置条件
+
+**CLI 工具使用**:
+```bash
+# 检查 CLI 工具可用性
+opco --version
+
+# 获取所有活跃目标列表
+opco list --active --json
+
+# 如果找到多个目标，获取目标详情供用户选择
+opco view <goal-name> --json
+
+# 验证前置条件
+opco validate <goal-name> --workflow create-task --json
+
+# 如果 tasks.md 已存在，获取现有任务统计
+opco tasks <goal-name> --json
+```
 
 **前置条件检查逻辑**:
 ```
+IF CLI 工具不可用 THEN
+  切换到手动模式检查目录和文件
+ELSE
+  使用 CLI 工具进行以下检查
+END IF
+
 IF goals/ 目录不存在 THEN
   "哎呀，看起来你还没有创建目标呢 (｡•́︿•̀｡)"
   "我们需要先创建一个目标，才能制定任务哦！"
@@ -111,33 +135,84 @@ IF goals/ 目录不存在 THEN
   END IF
 END IF
 
-IF 找到多个目标文件夹 THEN
-  列出所有目标
+# 使用 CLI 获取活跃目标列表
+activeGoals = 执行 `opco list --active --json`
+
+IF activeGoals.data.goals.length > 1 THEN
+  展示所有活跃目标
   询问: "你想为哪个目标制定任务呢？"
+  FOR EACH goal IN activeGoals.data.goals DO
+    显示: "- ${goal.title} (${goal.name})"
+  END FOR
   等待用户选择
+  selectedGoal = 用户选择的目标
+  使用 `opco view <selectedGoal> --json` 获取详细信息展示
+ELSE IF activeGoals.data.goals.length == 1 THEN
+  selectedGoal = activeGoals.data.goals[0].name
+  "找到了你的目标：${activeGoals.data.goals[0].title}"
+ELSE
+  → ERROR (没有活跃目标)
 END IF
 
-IF goal.md 不存在 THEN
-  → ERROR (目标文件缺失，引导至 create-goal)
-END IF
+# 验证前置条件
+validationResult = 执行 `opco validate <selectedGoal> --workflow create-task --json`
 
-IF milestones.md 不存在 THEN
-  询问: "我没找到里程碑文件，要不要先补充一下里程碑？"
-  IF 用户同意 THEN
-    → ERROR (引导补充里程碑)
-  ELSE
-    "好的，那我们直接制定任务吧！"
-    → CONTEXT_REVIEW
+IF NOT validationResult.data.isValid THEN
+  IF validationResult.data.missingFiles.includes("goal.md") THEN
+    → ERROR (目标文件缺失，引导至 create-goal)
+  END IF
+  
+  IF validationResult.data.missingFiles.includes("milestones.md") THEN
+    询问: "我没找到里程碑文件，要不要先补充一下里程碑？"
+    IF 用户同意 THEN
+      → ERROR (引导补充里程碑)
+    ELSE
+      "好的，那我们直接制定任务吧！"
+      → CONTEXT_REVIEW
+    END IF
   END IF
 END IF
 
-IF tasks.md 已存在 THEN
+# 检查 tasks.md 是否已存在
+try
+  taskStats = 执行 `opco tasks <selectedGoal> --json`
+  tasksExist = true
+catch error
+  tasksExist = false
+END try
+
+IF tasksExist THEN
+  展示现有任务统计:
+  - 总任务数: taskStats.stats.total
+  - 已完成: taskStats.stats.completed
+  - 未完成: taskStats.stats.pending
+  - 完成率: ${taskStats.stats.percentage}%
+  
   询问: "我看到你已经有任务清单了，是要：
   1. 创建新周期的任务（归档旧任务）
   2. 更新现有任务
   3. 查看现有任务"
   
-  根据用户选择决定下一步
+  IF 用户选择 1 THEN
+    询问: "要归档旧任务吗？"
+    IF 用户同意 THEN
+      执行 `opco archive <selectedGoal> --json`
+      展示归档结果
+    END IF
+    → CONTEXT_REVIEW
+  ELSE IF 用户选择 2 THEN
+    "好的，我们来看看怎么更新现有任务~"
+    → CONTEXT_REVIEW
+  ELSE IF 用户选择 3 THEN
+    执行 `opco tasks <selectedGoal> --show-tasks`
+    展示任务列表
+    询问: "看完后要继续吗？"
+    IF 用户同意 THEN
+      → CONTEXT_REVIEW
+    ELSE
+      → ERROR (用户取消)
+    END IF
+  END IF
 END IF
 ```
 
@@ -152,22 +227,64 @@ END IF
 
 #### STATE: CONTEXT_REVIEW (上下文回顾)
 **进入条件**: 前置检查通过
-**执行动作**: 简要回顾目标和里程碑
+**执行动作**: 使用 CLI 工具读取并回顾目标和里程碑
+
+**CLI 工具使用**:
+```bash
+# 获取目标详情
+opco view <goal-name> --json
+
+# 获取现有任务统计（如果有）
+opco tasks <goal-name> --json
+```
 
 **回顾策略**:
 ```
-1. 读取 goal.md 和 milestones.md
-2. 提取关键信息：
-   - 目标描述
-   - 目标期限
-   - 关键里程碑（最近的2-3个）
-   - 当前进展（如果有）
+# 使用 CLI 工具获取目标信息
+goalInfo = 执行 `opco view <goal-name> --json`
 
-3. 向用户呈现摘要：
+# 提取关键信息
+goalTitle = goalInfo.data.metadata.title
+goalDescription = goalInfo.data.metadata.description
+goalStatus = goalInfo.data.metadata.status
+goalDeadline = goalInfo.data.metadata.deadline
+goalCreated = goalInfo.data.metadata.created
+
+# 如果有现有任务，获取任务统计
+try
+  taskStats = 执行 `opco tasks <goal-name> --json`
+  hasExistingTasks = true
+catch error
+  hasExistingTasks = false
+END try
+
+# 向用户呈现摘要
 "让我们先回顾一下你的目标 📋
 
-目标：[目标简述]
-期限：[时间框架]
+目标：${goalTitle}
+状态：${goalStatus}
+创建时间：${goalCreated}
+${goalDeadline ? "截止日期：" + goalDeadline : ""}
+
+${goalDescription ? "描述：" + goalDescription : ""}
+"
+
+# 如果有现有任务，显示当前进展
+IF hasExistingTasks THEN
+  "
+当前进展：
+- 总任务数：${taskStats.stats.total}
+- 已完成：${taskStats.stats.completed}
+- 未完成：${taskStats.stats.pending}
+- 完成率：${taskStats.stats.percentage}%
+"
+END IF
+
+# 读取 milestones.md 获取里程碑信息（手动读取或通过 CLI）
+milestones = 读取 milestones.md
+
+# 显示最近的2-3个里程碑
+"
 最近的里程碑：
 - [里程碑1] - [时间]
 - [里程碑2] - [时间]
@@ -181,7 +298,15 @@ IF 用户确认信息正确 THEN
   → PERIOD_DEFINITION
 ELSE IF 用户发现信息需要更新 THEN
   "好的，我们先更新一下目标信息吧"
-  → ERROR (引导更新目标文件)
+  询问需要更新的字段
+  IF 用户确认 THEN
+    使用 `opco update <goal-name> --field <field> --value <value>` 更新
+    展示更新结果
+  END IF
+  → CONTEXT_REVIEW (重新确认)
+ELSE IF 用户想更新状态 THEN
+  使用 `opco update <goal-name> --status <status>` 更新状态
+  → CONTEXT_REVIEW (重新确认)
 END IF
 ```
 
@@ -189,9 +314,25 @@ END IF
 **进入条件**: 上下文回顾完成
 **执行动作**: 与用户确认当前任务周期
 
+**CLI 工具使用**:
+```bash
+# 获取当前日期
+opco date
+
+# 计算周期结束日期
+opco date --offset +1w
+opco date --offset +2w
+
+# 计算下次评估时间
+opco date --offset +3d
+```
+
 **周期定义策略**:
 ```
-1. 从文件中提取建议周期
+1. 获取当前日期
+currentDate = 执行 `opco date`
+
+2. 从文件中提取建议周期
 IF preferences.md 中有周期偏好 THEN
   使用用户偏好的周期长度
 ELSE IF milestones.md 中有最近的里程碑 THEN
@@ -200,29 +341,88 @@ ELSE
   建议默认周期（如2周或1个月）
 END IF
 
-2. 与用户确认：
+3. 与用户确认：展示当前日期并确认周期
+"今天是 ${currentDate}"
 Q: "这次任务清单的周期是多久呢？我建议是[建议周期]，你觉得呢？"
 
-3. 确定起止时间：
+4. 周期识别和计算
+IF 用户指定周期为"一周"或"1周" THEN
+  periodEndDate = 执行 `opco date --offset +1w`
+  展示: "周期从 ${currentDate} 到 ${periodEndDate}"
+ELSE IF 用户指定周期为"两周"或"2周" THEN
+  periodEndDate = 执行 `opco date --offset +2w`
+  展示: "周期从 ${currentDate} 到 ${periodEndDate}"
+ELSE IF 用户指定具体天数 THEN
+  periodEndDate = 执行 `opco date --offset +${days}d`
+  展示: "周期从 ${currentDate} 到 ${periodEndDate}"
+ELSE IF 用户指定具体日期 THEN
+  验证日期格式
+  计算天数 = 执行 `opco date --diff ${specifiedDate}`
+  展示: "周期从 ${currentDate} 到 ${specifiedDate}，共 ${calculateDiff.days} 天"
+END IF
+
+5. 确定起止时间：
 Q: "那我们从什么时候开始？到什么时候结束？"
 确保格式为 YYYY-MM-DD
+
+IF 用户指定了开始日期 THEN
+  startDate = 用户指定的开始日期
+ELSE
+  startDate = currentDate（今天）
+END IF
 ```
 
 **周期合理性检查**:
 ```
-IF 周期 < 3天 THEN
+# 计算实际周期天数
+actualDays = 执行 `opco date --date ${startDate} --diff ${endDate}`
+
+IF actualDays.days < 3 THEN
   "周期有点短哦，可能来不及完成太多任务 (｡•́︿•̀｡)"
   建议延长
-ELSE IF 周期 > 3个月 THEN
+ELSE IF actualDays.days > 90 THEN
   "周期有点长呢，建议分成几个小周期，这样更容易跟踪进度~"
   建议缩短
+END IF
+
+# 展示工作日信息
+workdaysInfo = 执行 `opco date --date ${startDate} --diff ${endDate} --workdays`
+展示: "这个周期有 ${actualDays.days} 天，其中工作日 ${workdaysInfo.workdays} 天"
+```
+
+**下次评估时间计算**:
+```
+# 基于周期长度和建议频率计算评估时间
+IF 周期 < 2周 THEN
+  reviewInterval = "3天"
+ELSE IF 周期 < 1个月 THEN
+  reviewInterval = "1周"
+ELSE
+  reviewInterval = "2周"
+END IF
+
+# 计算建议的评估日期
+IF reviewInterval == "3天" THEN
+  nextReviewDate = 执行 `opco date --offset +3d`
+ELSE IF reviewInterval == "1周" THEN
+  nextReviewDate = 执行 `opco date --offset +1w`
+ELSE IF reviewInterval == "2周" THEN
+  nextReviewDate = 执行 `opco date --offset +2w`
+END IF
+
+Q: "那我们下次回顾的时间定在 ${nextReviewDate}，可以吗？"
+
+IF 用户同意 THEN
+  保存下次评估时间
+ELSE
+  引导用户指定评估日期
 END IF
 ```
 
 **转换规则**:
 ```
 IF 周期确定 THEN
-  保存周期信息 → TASK_DECOMPOSITION
+  保存周期信息（起止日期、周期长度、工作日数）→ TASK_DECOMPOSITION
 END IF
 ```
 
@@ -417,7 +617,16 @@ END IF
 **进入条件**: 任务清单已确认
 **执行动作**:
 - 在目标文件夹内创建 `tasks.md` 文件
-- 按照模板格式生成结构化内容
+- 使用 CLI 工具验证文件格式
+
+**CLI 工具使用**:
+```bash
+# 文件创建后验证格式
+opco check <goal-name> --quiet
+
+# 获取任务统计确认创建成功
+opco tasks <goal-name> --json
+```
 
 **文件生成规范**:
 ```
@@ -444,8 +653,15 @@ IF tasks.md 已存在 THEN
   3. 取消"
   
   IF 选择归档 THEN
-    移动旧文件到 archives/tasks-[date].md
-    创建新文件
+    # 使用 CLI 工具归档
+    执行 `opco archive <goal-name> --json`
+    IF 退出码 == 0 THEN
+      "旧任务已归档"
+      创建新文件
+    ELSE
+      切换到手动归档
+      创建新文件
+    END IF
   ELSE IF 选择覆盖 THEN
     备份后覆盖
   ELSE
@@ -456,11 +672,26 @@ END IF
 IF 文件写入失败 THEN
   → ERROR (文件操作失败)
 END IF
+
+# 文件创建后验证
+validationResult = 执行 `opco check <goal-name> --quiet`
+
+IF validationResult.exitCode == 0 THEN
+  "任务文件创建成功！📝"
+ELSE IF validationResult.exitCode == 3 THEN
+  "发现一些格式问题，正在修复..."
+  执行 `opco check <goal-name> --fix`
+  "修复完成！"
+END IF
+
+# 获取任务统计确认
+taskStats = 执行 `opco tasks <goal-name> --json`
+展示任务统计信息
 ```
 
 **转换规则**:
 ```
-IF 文件创建成功 THEN
+IF 文件创建成功 AND 验证通过 THEN
   "任务文件创建成功！📝"
   → TRACKING_SETUP
 ELSE
@@ -492,10 +723,43 @@ END IF
 基于周期和跟踪频率计算
 Q: "那我们下次回顾的时间定在[建议日期]，可以吗？"
 
-3. 提醒方式
+# 计算建议的评估日期
+IF 用户指定的跟踪频率为"3天"或"每3天" THEN
+  nextReviewDate = 执行 `opco date --offset +3d`
+ELSE IF 用户指定的跟踪频率为"1周"或"每周" THEN
+  nextReviewDate = 执行 `opco date --offset +1w`
+ELSE IF 用户指定的跟踪频率为"2周"或"每2周" THEN
+  nextReviewDate = 执行 `opco date --offset +2w`
+END IF
+
+IF 用户同意 THEN
+  保存下次评估时间: nextReviewDate
+ELSE
+  引导用户指定评估日期
+END IF
+
+3. 任务进度计算（用于后续跟踪）
+# 计算从周期开始到当前的时间
+IF 周期已设定起止日期 THEN
+  startDate = 周期开始日期
+  currentDate = 执行 `opco date`
+  
+  # 计算已过天数和剩余天数
+  progressInfo = 执行 `opco date --date ${startDate} --diff ${currentDate}`
+  remainingInfo = 执行 `opco date --date ${currentDate} --diff ${endDate}`
+  
+  展示信息: "从 ${startDate} 到现在（${currentDate}），已经过了 ${progressInfo.days} 天。距离周期结束还有 ${remainingInfo.days} 天。"
+  
+  IF 需要工作日统计 THEN
+    workdaysInfo = 执行 `opco date --date ${startDate} --diff ${currentDate} --workdays`
+    展示: "其中工作日 ${workdaysInfo.workdays} 天"
+  END IF
+END IF
+
+4. 提醒方式
 Q: "需要我提醒你吗？（如果你的环境支持提醒功能）"
 
-4. 进度更新方式
+5. 进度更新方式
 说明: "你可以随时更新 tasks.md 中的任务状态：
 - TODO: 待办
 - IN_PROGRESS: 进行中
@@ -509,6 +773,7 @@ Q: "需要我提醒你吗？（如果你的环境支持提醒功能）"
 ```
 IF 跟踪计划设置完成 THEN
   将下次评估时间写入 tasks.md
+  将进度计算信息记录（用于后续跟踪）
   → COMPLETE
 END IF
 ```
@@ -516,9 +781,19 @@ END IF
 #### STATE: COMPLETE (完成)
 **进入条件**: 所有设置完成
 **执行动作**:
+- 使用 CLI 工具显示任务统计
 - 总结任务清单
 - 提供行动建议
 - 鼓励用户
+
+**CLI 工具使用**:
+```bash
+# 显示任务统计信息
+opco tasks <goal-name>
+
+# JSON 模式获取统计数据
+opco tasks <goal-name> --json
+```
 
 **完成检查清单**:
 ```
@@ -527,22 +802,33 @@ END IF
 ✓ 任务数量: [N]个任务
 ✓ 优先级分布: P1([n]个) P2([n]个) P3([n]个)
 ✓ 下次评估时间: [日期]
+✓ 文件格式验证通过: `opco check <goal-name> --quiet` 返回退出码 0
 ```
 
 **结束语模板**:
 ```
+# 使用 CLI 工具获取任务统计
+taskStats = 执行 `opco tasks <goal-name> --json`
+
 "太棒了！任务清单已经准备好啦！🎉
 
 本周期任务概览：
-- 周期：[起始日期] - [结束日期]
-- 任务总数：[N]个
-- 高优先级任务：[列出P1任务]
+- 周期：${taskStats.stats.period}
+- 任务总数：${taskStats.stats.total}个
+- 已完成：0个
+- 未完成：${taskStats.stats.total}个
+- 完成率：0%
+
+高优先级任务：
+[列出P1任务]
 
 行动建议：
 1. 从高优先级任务开始
 2. 每天完成一点，不要拖延
 3. 遇到困难及时调整，不要硬扛
 4. 记得更新任务状态
+
+你可以随时用 `opco tasks <goal-name>` 查看任务进度。
 
 下次回顾时间：[日期]
 

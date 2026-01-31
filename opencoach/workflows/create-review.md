@@ -104,43 +104,95 @@ END IF
 #### STATE: PRE_CHECK (前置条件检查)
 **进入条件**: 从 INIT 转换而来
 **执行动作**:
-- 检查 `tasks.md` 是否存在
-- 检查任务清单是否包含有效任务
+- 使用 CLI 工具检查 `tasks.md` 是否存在
+- 使用 CLI 工具检查任务清单是否包含有效任务
 - 检查是否到了评估周期
+
+**CLI 工具使用**:
+```bash
+# 检查 CLI 工具可用性
+opco --version
+
+# 获取任务列表和详细信息
+opco tasks <goal-name> --show-tasks --json
+
+# 获取任务统计（用于计算完成率）
+opco tasks <goal-name> --json
+```
 
 **前置条件检查逻辑**:
 ```
-IF tasks.md 不存在 THEN
+IF CLI 工具不可用 THEN
+  切换到手动模式检查文件
+ELSE
+  使用 CLI 工具进行以下检查
+END IF
+
+# 检查任务文件是否存在
+try
+  taskInfo = 执行 `opco tasks <goal-name> --show-tasks --json`
+  tasksExist = true
+catch error
+  tasksExist = false
+END try
+
+IF NOT tasksExist THEN
   "咦，我没找到任务清单呢 (｡•́︿•̀｡)"
   "要不要先创建一个任务清单？"
   → ERROR (引导至 create-task 工作流)
 END IF
 
-IF tasks.md 为空或无有效任务 THEN
+# 检查任务列表是否为空
+IF taskInfo.stats.total == 0 THEN
   "任务清单是空的哦，看起来还没有开始制定任务~"
   → ERROR (引导至 create-task 工作流)
 END IF
 
-读取 tasks.md 中的信息：
-- 任务周期（起止日期）
-- 任务列表
-- 任务状态
-- 下次评估时间
+# 获取任务统计信息
+taskStats = 执行 `opco tasks <goal-name> --json`
 
-IF 当前日期 < 下次评估时间 THEN
-  询问: "我看到下次评估时间是[日期]，现在还没到呢。
-  是遇到什么情况需要提前回顾吗？还是想调整一下任务？"
+读取 tasks.md 中的信息（或从 CLI 输出获取）：
+- 任务周期：taskStats.stats.period
+- 任务总数：taskStats.stats.total
+- 已完成：taskStats.stats.completed
+- 未完成：taskStats.stats.pending
+- 完成率：taskStats.stats.percentage
+
+# 检查是否到了评估周期
+nextReviewDate = 从 tasks.md 中获取下次评估时间
+
+IF nextReviewDate 存在 THEN
+  # 使用 CLI 工具计算当前日期与下次评估时间的差值
+  diffInfo = 执行 `opco date --diff ${nextReviewDate}`
   
-  IF 用户确认提前回顾 THEN
-    "好的，那我们现在就来回顾一下吧！"
-    → TASK_REVIEW
-  ELSE IF 用户只是想调整任务 THEN
-    "明白了，我们直接更新任务清单吧~"
-    → TASK_UPDATE
+  # 获取当前日期
+  currentDate = 执行 `opco date`
+  
+  IF diffInfo.days > 0 THEN
+    # 还没到评估时间
+    daysUntilReview = diffInfo.days
+    weeksUntilReview = Math.abs(diffInfo.weeks)
+    
+    询问: "我看到下次评估时间是 ${nextReviewDate}，现在（${currentDate}）还没到呢。
+    还需要 ${daysUntilReview} 天（约 ${weeksUntilReview} 周）。
+    是遇到什么情况需要提前回顾吗？还是想调整一下任务？"
+
+    IF 用户确认提前回顾 THEN
+      "好的，那我们现在就来回顾一下吧！"
+      使用 `opco date` 展示当前日期和建议日期供用户确认
+      → TASK_REVIEW
+    ELSE IF 用户只是想调整任务 THEN
+      "明白了，我们直接更新任务清单吧~"
+      → TASK_UPDATE
+    ELSE
+      → ERROR (用户取消)
+    END IF
   ELSE
-    → ERROR (用户取消)
+    "好的，让我们来回顾一下这个周期的任务完成情况吧！"
+    → TASK_REVIEW
   END IF
 ELSE
+  # 没有设定下次评估时间，直接进入回顾
   "好的，让我们来回顾一下这个周期的任务完成情况吧！"
   → TASK_REVIEW
 END IF
@@ -157,51 +209,51 @@ END IF
 
 #### STATE: TASK_REVIEW (任务回顾)
 **进入条件**: 前置检查通过
-**执行动作**: 与用户一起回顾每个任务的完成情况
+**执行动作**: 使用 CLI 工具获取任务信息，与用户一起回顾每个任务的完成情况
+
+**CLI 工具使用**:
+```bash
+# 获取详细任务列表
+opco tasks <goal-name> --show-tasks --json
+
+# 获取任务统计
+opco tasks <goal-name> --json
+```
 
 **结构化评估框架**:
 ```
+# 使用 CLI 工具获取任务信息
+taskInfo = 执行 `opco tasks <goal-name> --show-tasks --json`
+taskStats = 执行 `opco tasks <goal-name> --json`
+
 1. 整体概览
 "让我们先看看整体情况：
-- 任务周期：[起始日期] - [结束日期]
-- 任务总数：[N]个
-- 已完成：[n]个 ✓
-- 进行中：[n]个 ⏳
-- 未开始：[n]个 ○
-- 受阻：[n]个 ⚠️
+- 任务周期：${taskStats.stats.period}
+- 任务总数：${taskStats.stats.total}个
+- 已完成：${taskStats.stats.completed}个 ✓
+- 未完成：${taskStats.stats.pending}个 ○
+- 完成率：${taskStats.stats.percentage}%"
 
-完成率：[百分比]%"
+# 显示进度条
+displayProgressBar(taskStats.stats.percentage)
 
 2. 逐个任务回顾
-FOR EACH 任务 IN 任务列表 DO
+FOR EACH task IN taskInfo.data.tasks DO
   显示任务信息：
-  "任务：[任务描述]
-   优先级：[P1/P2/P3]
-   状态：[当前状态]"
-  
-  IF 任务状态 == DONE THEN
+  "任务：${task.text}
+   优先级：[P1/P2/P3] (从文件或CLI获取)
+   状态：${task.checked ? "已完成 ✓" : "未完成 ○"}"
+
+  IF task.checked == true THEN
     使用积极鼓励语言：
     "太棒了！这个任务完成啦！🎉"
     Q: "完成这个任务的感觉怎么样？有什么收获吗？"
-    
-  ELSE IF 任务状态 == IN_PROGRESS THEN
-    使用支持性语言：
-    "这个任务正在进行中呢~"
-    Q: "进展如何？遇到什么困难了吗？"
-    Q: "需要调整预期完成时间吗？"
-    
-  ELSE IF 任务状态 == BLOCKED THEN
-    使用关怀性语言：
-    "看起来这个任务遇到阻碍了 (｡•́︿•̀｡)"
-    Q: "能跟我说说是什么阻碍了你吗？"
-    Q: "我们一起想想怎么解决吧！"
-    → CHALLENGE_DISCUSSION (针对该任务)
-    
-  ELSE IF 任务状态 == TODO THEN
+
+  ELSE
     使用非评判性语言：
     "这个任务还没开始呢~"
     Q: "是什么原因让你还没开始这个任务？"
-    
+
     可能的原因探索：
     - 优先级不够高？
     - 不知道从哪里开始？
@@ -209,23 +261,25 @@ FOR EACH 任务 IN 任务列表 DO
     - 其他任务占用了时间？
     - 对任务感到焦虑或抗拒？
   END IF
-  
+
   记录用户的反馈和感受
 END FOR
 
 3. 完成率分析
-IF 完成率 >= 80% THEN
+completionRate = taskStats.stats.percentage
+
+IF completionRate >= 80 THEN
   "哇！完成率超过80%，太厉害了！(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧"
   "你是怎么做到的？有什么秘诀吗？"
-  
-ELSE IF 完成率 >= 50% THEN
+
+ELSE IF completionRate >= 50 THEN
   "完成了一半以上，不错哦！(◕‿◕)"
   "虽然还有一些任务没完成，但你已经取得了实质性进展！"
-  
-ELSE IF 完成率 >= 20% THEN
+
+ELSE IF completionRate >= 20 THEN
   "看起来这个周期有点挑战呢 (｡•́︿•̀｡)"
   "没关系，我们一起分析一下原因，看看怎么改进~"
-  
+
 ELSE
   "这个周期似乎遇到了不少困难..."
   "别灰心，我们来聊聊发生了什么，好吗？"
@@ -495,7 +549,19 @@ END IF
 **进入条件**: 回顾内容已收集完整
 **执行动作**:
 - 在目标文件夹内创建 `reviews/[date].md` 文件
-- 如果需要归档，创建 `archives/tasks-[date].md`
+- 使用 CLI 工具归档任务文件（如果需要）
+
+**CLI 工具使用**:
+```bash
+# 归档任务文件
+opco archive <goal-name> --review <date>
+
+# 更新目标状态（如果所有任务完成）
+opco update <goal-name> --status completed
+
+# 更新目标其他字段
+opco update <goal-name> --field <field> --value <value>
+```
 
 **文件生成规范**:
 ```
@@ -510,9 +576,27 @@ END IF
    - 个人成长反思
 
 IF 需要归档 THEN
-  5. 创建 archives/ 目录（如果不存在）
-  6. 复制 tasks.md 到 archives/tasks-[date].md
-  7. 在归档文件中标记归档日期和原因
+  # 使用 CLI 工具归档
+  执行 `opco archive <goal-name> --review <date>`
+  IF 退出码 == 0 THEN
+    "任务已归档，回顾文件也已创建~"
+  ELSE
+    切换到手动归档模式
+    手动创建 archives/ 目录
+    复制 tasks.md 到 archives/tasks-[date].md
+    在归档文件中标记归档日期和原因
+  END IF
+END IF
+
+# 如果所有任务完成，更新目标状态
+IF 完成率 == 100% THEN
+  询问: "所有任务都完成啦！要把目标标记为已完成吗？"
+  IF 用户同意 THEN
+    执行 `opco update <goal-name> --status completed --json`
+    IF 退出码 == 0 THEN
+      "目标状态已更新为已完成 ✨"
+    END IF
+  END IF
 END IF
 ```
 
@@ -523,8 +607,20 @@ IF 文件已存在 THEN
   1. 覆盖（会丢失之前的内容）
   2. 创建新文件（添加时间戳）
   3. 取消"
-  
+
   根据用户选择处理
+END IF
+
+IF CLI 命令执行失败 THEN
+  IF 退出码 == 1 THEN
+    "归档命令执行失败，切换到手动模式"
+    手动处理归档
+  ELSE IF 退出码 == 2 THEN
+    "配置错误，请检查配置文件"
+  ELSE IF 退出码 == 3 THEN
+    "文件格式错误，尝试自动修复..."
+    执行 `opco check <goal-name> --fix`
+  END IF
 END IF
 
 IF 文件写入失败 THEN
@@ -587,7 +683,42 @@ END IF
 
 #### STATE: NEXT_CYCLE_PLANNING (下周期规划)
 **进入条件**: 任务已全部完成并归档
-**执行动作**: 询问用户是否开始下一周期
+**执行动作**: 询问用户是否开始下一周期，验证前置条件
+
+**CLI 工具使用**:
+```bash
+# 计算周期天数和工作日
+opco date --date <startDate> --diff <endDate> --workdays
+
+# 计算下一个周一的日期
+opco date --offset +1w --date Monday
+
+# 验证是否可以进入 create-task 工作流
+opco validate <goal-name> --workflow create-task
+
+# 查看更新后的目标状态
+opco view <goal-name>
+```
+
+**周期统计**:
+```
+# 获取当前日期
+currentDate = 执行 `opco date`
+
+# 计算本周期的天数和工作日
+IF 周期有起止日期 THEN
+  cycleInfo = 执行 `opco date --date ${startDate} --diff ${endDate} --workdays`
+  
+  展示周期统计:
+  "本周期统计：
+  - 周期时长：${cycleInfo.totalDays} 天
+  - 工作日：${cycleInfo.workdays} 天
+  - 周末：${cycleInfo.weekends} 天
+  - 完成率：${completionRate}%
+  
+  你用了 ${cycleInfo.workdays} 个工作日完成了 ${taskStats.stats.completed} 个任务，效率不错！"
+END IF
+```
 
 **下周期引导**:
 ```
@@ -601,16 +732,51 @@ END IF
 你想怎么做呢？"
 
 IF 用户选择马上开始 THEN
-  "好的！那我们现在就开始吧~ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧"
-  提示: 可以启动 create-task 工作流
-  
+  # 验证是否可以进入任务制定流程
+  validationResult = 执行 `opco validate <goal-name> --workflow create-task --json`
+
+  IF validationResult.data.isValid THEN
+    "好的！那我们现在就开始吧~ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧"
+    
+    # 询问下个周期的开始日期
+    Q: "下个周期什么时候开始？"
+    
+    IF 用户说"下周"或"下个周期从下周开始" THEN
+      nextCycleStart = 执行 `opco date --offset +1w`
+      展示: "下个周期从 ${nextCycleStart} 开始"
+    ELSE IF 用户说"下个周期从下周一开始" THEN
+      nextMonday = 执行 `opco date --offset +1w --date Monday`
+      展示: "下个周期从下周一 ${nextMonday} 开始"
+    ELSE IF 用户指定具体日期 THEN
+      验证日期格式
+      展示: "下个周期从 ${specifiedDate} 开始"
+    ELSE
+      nextCycleStart = 执行 `opco date`
+      展示: "下个周期从今天 ${nextCycleStart} 开始"
+    END IF
+    
+    提示: 可以启动 create-task 工作流
+  ELSE
+    "看起来还需要一些准备工作..."
+    IF validationResult.data.missingFiles.length > 0 THEN
+      "缺少以下文件：${validationResult.data.missingFiles.join(', ')}"
+    END IF
+    提示: 需要先完成相应的前置工作
+  END IF
+
 ELSE IF 用户选择休息 THEN
   "好的，好好休息，庆祝一下你的成就！🎊"
   "想开始新周期的时候随时来找我~"
-  
+
 ELSE IF 用户想调整目标 THEN
   "明白了，我们可以重新审视一下目标~"
-  提示: 可以更新 goal.md 或 milestones.md
+
+  # 使用 CLI 工具查看当前目标状态
+  goalInfo = 执行 `opco view <goal-name> --json`
+  展示当前目标信息
+
+  询问: "需要更新目标的哪些信息？"
+  根据用户选择使用 `opco update` 命令更新
 END IF
 ```
 
@@ -622,9 +788,19 @@ END IF
 #### STATE: COMPLETE (完成)
 **进入条件**: 所有回顾工作完成
 **执行动作**:
+- 使用 CLI 工具展示更新后的目标状态
 - 总结回顾成果
 - 提供鼓励和支持
 - 确认下一步计划
+
+**CLI 工具使用**:
+```bash
+# 查看更新后的目标状态
+opco view <goal-name>
+
+# JSON 模式获取目标信息
+opco view <goal-name> --json
+```
 
 **完成检查清单**:
 ```
@@ -637,12 +813,20 @@ END IF
 
 **结束语模板**:
 ```
+# 使用 CLI 工具查看更新后的目标状态
+goalInfo = 执行 `opco view <goal-name> --json`
+
 "这次回顾就到这里啦！(◕‿◕)
 
 回顾总结：
-- 完成率：[百分比]%
+- 完成率：${completionRate}%
 - 主要收获：[列出2-3条]
 - 改进方向：[列出1-2条]
+
+当前目标状态：
+- 目标：${goalInfo.data.metadata.title}
+- 状态：${goalInfo.data.metadata.status}
+- 更新时间：${goalInfo.data.metadata.updated}
 
 你已经做得很棒了！[根据具体情况给予个性化鼓励]
 
@@ -654,6 +838,9 @@ END IF
 [END IF]
 
 记住，我一直在这里支持你~ (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧"
+
+# 如果用户想查看详细目标信息，执行：
+# opco view <goal-name>
 ```
 
 **转换规则**:
